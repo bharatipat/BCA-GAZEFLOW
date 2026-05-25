@@ -1,0 +1,3 @@
+@echo off
+echo Opening GazeFlow Project Demo...
+start "" "GazeFlow Project_Demo.html"

@@ -3,6 +3,7 @@
 # ╚══════════════════════════════════════════╝
 import cv2, mediapipe as mp
 
+
 class FaceModule:
     def __init__(self):
         print("🧑 Loading FaceMesh...")

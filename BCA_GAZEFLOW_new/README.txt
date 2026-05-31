@@ -25,7 +25,7 @@
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   EYE-CLOSE ALERT SYSTEM (NEW)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Eyes closed 7 seconds   → ⚠️  WARNING + beep (880 Hz)
+  Eyes closed 5 seconds   → ⚠️  WARNING + beep (880 Hz)
                              Red overlay appears on dashboard
   Eyes closed 10 seconds  → 🚨 CRITICAL alarm + triple beep (1400 Hz)
                              Full-screen red alert overlay
@@ -48,4 +48,3 @@
   Key packages: flask, flask-cors, opencv-python, mediapipe,
                 pyautogui, scipy, numpy
   winsound is built into Python on Windows (no install needed).
-

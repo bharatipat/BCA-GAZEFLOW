@@ -128,12 +128,14 @@ class EyeTracker:
             "alert_7s":       False,
             "alert_10s":      False,
             "closed":         False,
+            "both_closed":    False,
             "close_dur":      0.0,
             "close_pct":      0.0,
         }
 
         left_closed  = le < EAR_THRESHOLD
         right_closed = re < EAR_THRESHOLD
+        both_closed  = left_closed and right_closed
         left_only    = left_closed and not right_closed
         right_only   = right_closed and not left_closed
 
@@ -160,7 +162,7 @@ class EyeTracker:
             self._right_mouse_fired = False
 
         # ── Eye closed ────────────────────────────────────────────────
-        if avg < EAR_THRESHOLD:
+        if both_closed:
             if self.close_start is None:
                 self.close_start = now
                 # Reset per-event flags on new close event
@@ -168,6 +170,7 @@ class EyeTracker:
                 self._alerted_10 = False
             dur = now - self.close_start
             result["closed"]    = True
+            result["both_closed"] = True
             result["close_dur"] = round(dur, 2)
             result["close_pct"] = round(min(100.0, (dur / ZOOM_OUT_BLINK) * 100), 1)
 
@@ -222,7 +225,7 @@ class EyeTracker:
                     self.zoom_level   = 2
                     action = "zoom_in"
 
-                elif ZOOM_OUT_BLINK <= dur:
+                elif ZOOM_OUT_BLINK <= dur < ALERT_7S:
                     result["zoom_out"] = True
                     self.zoom_level    = 1
                     action = "zoom_out"

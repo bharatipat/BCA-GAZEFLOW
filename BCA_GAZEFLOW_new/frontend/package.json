@@ -8,10 +8,12 @@
     "react-scripts": "5.0.1"
   },
   "scripts": {
-    "start": "react-scripts start",
+    "start": "set HOST=localhost&& set PORT=3000&& set DANGEROUSLY_DISABLE_HOST_CHECK=true&& react-scripts start",
+    "backend": "cd ..\\backend && python app.py",
+    "dev": "start \"GazeFlow Backend\" cmd /k \"cd /d ..\\backend && python app.py\" && npm start",
     "build": "react-scripts build"
   },
-  "proxy": "http://localhost:5000",
+  "proxy": "http://127.0.0.1:5000",
   "browserslist": {
     "production": [">0.2%","not dead"],
     "development": ["last 1 chrome version"]

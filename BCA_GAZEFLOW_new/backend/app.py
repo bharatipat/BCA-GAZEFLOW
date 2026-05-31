@@ -89,6 +89,15 @@ from screenshot_module import take_screenshot, get_screenshot_list, delete_scree
 app = Flask(__name__)
 CORS(app)
 
+FATIGUE_ALERT_MESSAGE = (
+    "You have been using the screen continuously. Eye fatigue detected. "
+    "Look away from the screen, blink slowly, and rest your eyes."
+)
+SCREEN_FATIGUE_FIRST_REMINDER_SEC = 20 * 60
+SCREEN_FATIGUE_REPEAT_SEC = 10 * 60
+LOW_BLINK_REMINDER_AFTER_SEC = 90
+LOW_BLINK_REMINDER_REPEAT_SEC = 5 * 60
+
 # ── Modules ────────────────────────────────────────────────────────
 camera = CameraModule()
 face   = FaceModule()
@@ -175,11 +184,11 @@ def _alarm_7s_warning():
     time.sleep(1.4)  # let beeps finish before speaking
 
     # ── Stage 2: Fatigue alert + rest suggestion ───────────────────
-    voice.speak_queued("Warning! You look tired. Please take a break.")
+    voice.speak_queued("Warning. Your eyes have been closed for 7 seconds.")
     time.sleep(2.0)
-    voice.speak_queued("Your eyes have been closed for 7 seconds.")
+    voice.speak_queued("Please open your eyes, look away from the screen, and rest for a moment.")
     time.sleep(1.5)
-    voice.speak_queued("Close your eyes gently and relax for a moment.")
+    voice.speak_queued("If you feel sleepy, pause your work before it reaches 10 seconds.")
     time.sleep(2.5)
 
     # ── Stage 3: Breathing guide ───────────────────────────────────
@@ -203,7 +212,7 @@ def _alarm_10s_critical():
     time.sleep(2.2)  # let alarm finish
 
     # ── Stage 2: Critical voice alert ─────────────────────────────
-    voice.speak_queued("CRITICAL ALERT! You look tired. Please take a break immediately!")
+    voice.speak_queued("Critical alert. Eye fatigue detected. Take a short break immediately.")
     time.sleep(2.0)
     voice.speak_queued("Your eyes have been closed for 10 seconds!")
     time.sleep(1.5)
@@ -216,6 +225,69 @@ def _alarm_10s_critical():
 
     # ── Stage 4: Safety message ────────────────────────────────────
     voice.speak_queued("If you feel drowsy, please rest. Your safety is important.")
+
+
+def _set_screen_fatigue_feedback(message, now_t):
+    """Queue one screen-fatigue suggestion and expose it to the dashboard."""
+    state["screen_fatigue_alert_id"] = state.get("screen_fatigue_alert_id", 0) + 1
+    state["screen_fatigue_alert_msg"] = message
+    state["screen_fatigue_alert_at"] = now_t
+    voice.speak(message)
+    print(f"SCREEN FATIGUE FEEDBACK - {message}")
+
+
+def _maybe_screen_fatigue_feedback(now_t, blink_rate, close_dur):
+    if not state.get("tracking") or not state.get("face_detected"):
+        return
+    if close_dur >= 0.4:
+        return
+
+    screen_time = state.get("screen_time_sec", 0) or 0
+    last_tip = state.get("last_screen_fatigue_voice_at", 0.0) or 0.0
+    last_blink_tip = state.get("last_low_blink_voice_at", 0.0) or 0.0
+
+    if (
+        screen_time >= LOW_BLINK_REMINDER_AFTER_SEC
+        and blink_rate < 8
+        and now_t - last_blink_tip >= LOW_BLINK_REMINDER_REPEAT_SEC
+    ):
+        state["last_low_blink_voice_at"] = now_t
+        _set_screen_fatigue_feedback(
+            "Your blink rate is low while using the screen. Blink slowly a few times, relax your eyes, and look away from the screen.",
+            now_t,
+        )
+        return
+
+    if (
+        screen_time >= SCREEN_FATIGUE_FIRST_REMINDER_SEC
+        and now_t - last_tip >= SCREEN_FATIGUE_REPEAT_SEC
+    ):
+        minutes = max(1, int(screen_time // 60))
+        state["last_screen_fatigue_voice_at"] = now_t
+        _set_screen_fatigue_feedback(
+            f"You have been using the screen continuously for {minutes} minutes. Look away from the screen, blink gently, and close both eyes for 7 to 10 seconds if they feel tired.",
+            now_t,
+        )
+
+
+def _send_eye_close_recovery_feedback(close_dur, now_t):
+    seconds = int(round(close_dur))
+    if close_dur >= 10:
+        message = (
+            f"You kept both eyes closed for about {seconds} seconds. "
+            "Please pause your work and take a short eye rest before continuing."
+        )
+    else:
+        message = (
+            f"Good. Both eyes were closed for about {seconds} seconds. "
+            "Now look away from the screen, blink slowly, and continue only when comfortable."
+        )
+
+    state["eye_close_recovery_id"] = state.get("eye_close_recovery_id", 0) + 1
+    state["eye_close_recovery_msg"] = message
+    state["eye_close_recovery_at"] = now_t
+    voice.speak(message)
+    print(f"EYE REST RECOVERY FEEDBACK - {message}")
 
 
 def process_voice_command(raw):
@@ -442,6 +514,7 @@ voice = VoiceAssistant(
 state = {
     # Tracking
     "tracking":        False,
+    "camera_open":     False,
     "face_detected":   False,
     # Gaze
     "gaze_x":          0,
@@ -489,6 +562,14 @@ state = {
     # ── FATIGUE ALERT ──────────────────────────────────
     "fatigue_alert_shown":  False,  # True when fatigue alert is active
     "fatigue_alert_msg":    "",     # Current fatigue alert message
+    "screen_fatigue_alert_id": 0,
+    "screen_fatigue_alert_msg": "",
+    "screen_fatigue_alert_at": 0.0,
+    "last_screen_fatigue_voice_at": 0.0,
+    "last_low_blink_voice_at": 0.0,
+    "eye_close_recovery_id": 0,
+    "eye_close_recovery_msg": "",
+    "eye_close_recovery_at": 0.0,
     # ── HEATMAP ANALYTICS ─────────────────────────────────
     "focus_zones":     {},       # grid cell → dwell time
     "top_area":        "",       # most viewed area label
@@ -508,6 +589,7 @@ os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
 def _db_conn():
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=TRUNCATE')
     return conn
 
 def _db_init():
@@ -668,14 +750,26 @@ def _session_to_dict(row):
 
 def _db_save_session(rec):
     with _db_conn() as c:
-        c.execute('''INSERT INTO sessions
+        cur = c.execute('''INSERT INTO sessions
             (date, start_time, end_time, duration_sec, duration_str,
              blinks, screenshots, drowsy_events, avg_fatigue, top_area, productivity)
             VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
             (rec['date'], rec['start_time'], rec['end_time'], rec['duration_sec'],
              rec['duration_str'], rec['blinks'], rec['screenshots'], rec['drowsy_events'],
              rec['avg_fatigue'], rec['top_area'], rec['productivity']))
-        return c.lastrowid
+        return cur.lastrowid
+
+def _db_update_session(session_id, rec):
+    with _db_conn() as c:
+        cur = c.execute('''UPDATE sessions SET
+            date=?, start_time=?, end_time=?, duration_sec=?, duration_str=?,
+            blinks=?, screenshots=?, drowsy_events=?, avg_fatigue=?,
+            top_area=?, productivity=?
+            WHERE id=?''',
+            (rec['date'], rec['start_time'], rec['end_time'], rec['duration_sec'],
+             rec['duration_str'], rec['blinks'], rec['screenshots'], rec['drowsy_events'],
+             rec['avg_fatigue'], rec['top_area'], rec['productivity'], session_id))
+        return cur.rowcount
 
 def _db_get_sessions(limit=50):
     with _db_conn() as c:
@@ -713,8 +807,13 @@ def tracking_loop():
     while True:
         frame = camera.get_frame()
         if frame is None:
-            time.sleep(0.01)
+            state["camera_open"] = False
+            state["face_detected"] = False
+            with frame_lock:
+                latest_frame = camera.placeholder_frame()
+            time.sleep(0.25)
             continue
+        state["camera_open"] = True
 
         if not state["tracking"]:
             cv2.putText(frame, "GAZEFLOW PROJECT — Click START TRACKING",
@@ -780,6 +879,7 @@ def tracking_loop():
             state["close_pct"]     = 0.0
 
             # ── Blink / Actions ───────────────────────────
+            prev_close_dur = state.get("close_dur", 0.0)
             result = eye.process_blink(landmarks, camera.width, camera.height)
             state["close_dur"] = result["close_dur"]
             state["close_pct"] = result["close_pct"]
@@ -848,6 +948,8 @@ def tracking_loop():
             # Reset eye alert level when eyes open
             if not result["closed"]:
                 state["eye_alert_level"] = 0
+                if prev_close_dur >= 7.0:
+                    _send_eye_close_recovery_feedback(prev_close_dur, now_t)
 
             # Fatigue scoring: 0=alert 1=mild 2=tired 3=critical
             fatigue = 0
@@ -868,7 +970,7 @@ def tracking_loop():
             if fatigue == 3 and prev_fatigue < 3 and not state.get("fatigue_alert_shown"):
                 # Play warning sound + set alert message
                 beep(1000, 400)
-                alert_msg = "You look tired. Please take a break."
+                alert_msg = FATIGUE_ALERT_MESSAGE
                 state["fatigue_alert_shown"] = True
                 state["fatigue_alert_msg"]   = alert_msg
                 voice.speak(alert_msg)
@@ -878,6 +980,8 @@ def tracking_loop():
             if fatigue < 3:
                 state["fatigue_alert_shown"] = False
                 state["fatigue_alert_msg"]   = ""
+
+            _maybe_screen_fatigue_feedback(now_t, blink_rate, close_dur)
 
             # ── HEATMAP ANALYTICS — focus zones + productivity ─
             nx_a = state["gaze_norm_x"]
@@ -1006,17 +1110,33 @@ def get_status():
     s['session_date']     = state.get('session_date', '')
     s['session_start_str']= state['session_start'].strftime('%H:%M:%S') if state.get('session_start') else '--:--:--'
     s['total_sessions']   = _db_count()
+    s['camera_id']        = getattr(camera, 'camera_id', None)
+    s['camera_backend']   = getattr(camera, 'backend_name', None)
+    s['camera_error']     = getattr(camera, 'error', '')
     return jsonify(s)
 
 @app.route('/toggle', methods=['POST'])
 def toggle():
     global _session_id_counter, _current_session_id
     was_tracking = state["tracking"]
+
+    if not was_tracking and not camera.is_opened():
+        camera.reconnect(force=True)
+        if not camera.is_opened():
+            state["tracking"] = False
+            state["camera_open"] = False
+            msg = getattr(camera, 'error', '') or 'Camera is not available.'
+            print(f"Tracking not started: {msg}")
+            return jsonify({
+                "tracking": False,
+                "camera_open": False,
+                "error": msg,
+            }), 503
+
     state["tracking"] = not state["tracking"]
 
     if state["tracking"] and not was_tracking:
         # ── Session STARTED ─────────────────────────────────────
-        _session_id_counter += 1
         now = datetime.now()
         state["session_start"]   = now
         state["session_date"]    = now.strftime('%Y-%m-%d')
@@ -1029,11 +1149,32 @@ def toggle():
         state["fatigue_alert_shown"] = False
         state["eye_close_alerted_7"] = False
         state["eye_close_alerted_10"]= False
+        state["screen_fatigue_alert_id"] = 0
+        state["screen_fatigue_alert_msg"] = ""
+        state["screen_fatigue_alert_at"] = 0.0
+        state["last_screen_fatigue_voice_at"] = 0.0
+        state["last_low_blink_voice_at"] = 0.0
+        state["eye_close_recovery_id"] = 0
+        state["eye_close_recovery_msg"] = ""
+        state["eye_close_recovery_at"] = 0.0
         state["focus_zones"]     = {}
+        session_rec = {
+            "date":         state["session_date"],
+            "start_time":   now.strftime('%H:%M:%S'),
+            "end_time":     "LIVE",
+            "duration_sec": 0,
+            "duration_str": "00:00:00",
+            "blinks":       0,
+            "screenshots":  0,
+            "drowsy_events":0,
+            "avg_fatigue":  0,
+            "top_area":     "—",
+            "productivity": 0,
+        }
+        _current_session_id = _db_save_session(session_rec)
+        _session_id_counter = _current_session_id
         voice.speak("Tracking started. Good luck!")
         print(f"▶  Session #{_session_id_counter} started at {now.strftime('%H:%M:%S')}")
-        # Will be set to real DB id once session is saved on stop
-        _current_session_id = _session_id_counter
 
     elif not state["tracking"] and was_tracking:
         # ── Session STOPPED — save to history ───────────────────
@@ -1053,7 +1194,10 @@ def toggle():
             "top_area":     state["top_area"] or "—",
             "productivity": state["productivity"],
         }
-        new_id = _db_save_session(session_rec)
+        if _current_session_id is not None:
+            _db_update_session(_current_session_id, session_rec)
+        else:
+            _current_session_id = _db_save_session(session_rec)
         _db_update_daily(session_rec)
         _current_session_id = None
         voice.speak(f"Tracking stopped. Session lasted {_fmt_time(round(dur))}. Total blinks: {state['blinks']}.")
@@ -1071,7 +1215,7 @@ def toggle():
         print(f"▶ Tracking started")
     else:
         print("⏹ Tracking stopped")
-    return jsonify({"tracking": state["tracking"]})
+    return jsonify({"tracking": state["tracking"], "session_id": _current_session_id})
 
 # ══════════════════════════════════════════════════════════
 # ROUTES — HEATMAP
@@ -1385,5 +1529,3 @@ if __name__ == '__main__':
     print("  🎙️  Voice Assistant: /voice/start  /voice/command")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000, threaded=True, debug=False)
-
-

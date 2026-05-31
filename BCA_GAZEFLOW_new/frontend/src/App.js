@@ -7,7 +7,8 @@
 // ╚══════════════════════════════════════════════════════════════╝
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
-const API = 'http://localhost:5000';
+const API = 'http://127.0.0.1:5000';
+const FATIGUE_ALERT_MESSAGE = 'You have been using the screen continuously. Eye fatigue detected. Look away from the screen, blink slowly, and rest your eyes.';
 
 const C = {
   bg:'#030810', sf:'#070f1c', card:'#0a1628', bdr:'#0d2040',
@@ -43,6 +44,57 @@ const TABS = [
   
   { id:'screenshots', label:'SHOTS',       icon: (c)=><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg> },
 ];
+
+const VOICE_FEEDBACK = {
+  drowsy: {
+    title: 'DROWSINESS DETECTED',
+    message: FATIGUE_ALERT_MESSAGE,
+    color: '#ff4444',
+    level: 2,
+  },
+  tired: {
+    title: 'TIRED DETECTED',
+    message: 'You look tired. Look away from the screen, blink slowly, and rest your eyes for a few seconds.',
+    color: '#f59e0b',
+    level: 1,
+  },
+  eyes: {
+    title: 'EYES CLOSING TOO LONG',
+    message: 'Wake up! Eyes closing detected.',
+    color: '#ffaa00',
+    level: 2,
+  },
+  stressed: {
+    title: 'STRESS DETECTED',
+    message: 'You look stressed, take a deep breath.',
+    color: '#f97316',
+    level: 1,
+  },
+  happy: {
+    title: 'HAPPY DETECTED',
+    message: 'Great mood! Keep going.',
+    color: '#22c55e',
+    level: 1,
+  },
+  normal: {
+    title: 'BACK TO NORMAL',
+    message: 'You seem refreshed now.',
+    color: '#00ff9d',
+    level: 1,
+  },
+  screen: {
+    title: 'CONTINUOUS SCREEN USE',
+    message: 'Look away from the screen, blink gently, and rest your eyes.',
+    color: '#00d4ff',
+    level: 1,
+  },
+  recovery: {
+    title: 'EYE REST FEEDBACK',
+    message: 'Continue only when your eyes feel comfortable.',
+    color: '#22c55e',
+    level: 1,
+  },
+};
 
 function PctMeter({ label, value, color, hint, showPct=true, height=8 }) {
   const pct = Math.min(100, Math.max(0, Number(value)||0));
@@ -217,7 +269,7 @@ export default function App() {
 
   const [tab, setTab] = useState('home');
   const [st, setSt]   = useState({
-    tracking:false, face_detected:false,
+    tracking:false, camera_open:false, face_detected:false,
     gaze_x:0, gaze_y:0, gaze_x_pct:50, gaze_y_pct:50,
     gaze_norm_x:0.5, gaze_norm_y:0.5,
     blinks:0, double_blinks:0, right_clicks:0,
@@ -230,6 +282,8 @@ export default function App() {
     focus_zones:{}, top_area:'—', focus_duration:0, productivity:0,
     eye_close_alerted_7:false, eye_close_alerted_10:false, eye_alert_level:0,
     fatigue_alert_shown:false, fatigue_alert_msg:'',
+    screen_fatigue_alert_id:0, screen_fatigue_alert_msg:'',
+    eye_close_recovery_id:0, eye_close_recovery_msg:'',
     heatmap_on:true, scroll_on:false,
     // session & time
     current_date:'', current_time:'', current_day:'',
@@ -243,12 +297,13 @@ export default function App() {
   const [eyeAlertLevel, setEyeAlertLevel] = useState(0);
   const [showEyeAlert,  setShowEyeAlert]  = useState(false);
   const [eyeAlertMsg,   setEyeAlertMsg]   = useState('');
+  const [voiceFeedback, setVoiceFeedback] = useState(null);
 
   // Heatmap state
   const [heatPts,         setHeatPts]         = useState([]);
   const [liveHeatVisible, setLiveHeatVisible] = useState(false);
   const [heatmapSessions, setHeatmapSessions] = useState([]);
-  const [fatigue,         setFatigue]         = useState({fatigue_level:0,drowsy_events:0,blink_rate_pm:0,eyes_closed_sec:0,focus_zones:{},top_area:'—',focus_duration:0,productivity:0});
+  const [fatigue,         setFatigue]         = useState({fatigue_level:0,drowsy_events:0,blink_rate_pm:0,eyes_closed_sec:0,focus_zones:{},top_area:'—',focus_duration:0,productivity:0,screen_fatigue_alert_id:0,eye_close_recovery_id:0});
   const [heatSelSession,  setHeatSelSession]  = useState(null);
 
   // Data tabs
@@ -303,6 +358,15 @@ export default function App() {
 
   const alertAudioRef = useRef(null);
   const alertToneTimers = useRef([]);
+  const lastSpokenEyeAlertRef = useRef(0);
+  const lastSpokenFatigueRef = useRef('');
+  const lastScreenFatigueAlertRef = useRef(0);
+  const screenFatiguePopupUntilRef = useRef(0);
+  const lastEyeRecoveryRef = useRef(0);
+  const lastFeedbackKindRef = useRef('');
+  const voiceFeedbackTimerRef = useRef(null);
+  const voiceSpeakDelayRef = useRef(null);
+  const voiceUnlockedRef = useRef(false);
 
   const playAlertSound = useCallback((level) => {
     try {
@@ -338,8 +402,94 @@ export default function App() {
     } catch {}
   }, []);
 
+  const speakText = useCallback(async (text, opts={}) => {
+    if (!text) return;
+    try {
+      try {
+        fetch(`${API}/voice/speak`, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({message:text})
+        }).catch(()=>{});
+      } catch {}
+
+      if (!('speechSynthesis' in window) || !window.SpeechSynthesisUtterance) return;
+      window.speechSynthesis.cancel();
+      try { window.speechSynthesis.resume(); } catch {}
+      const utterance = new window.SpeechSynthesisUtterance(text);
+      utterance.rate = opts.rate ?? 0.95;
+      utterance.pitch = opts.pitch ?? 1;
+      utterance.volume = opts.volume ?? 1;
+      window.speechSynthesis.speak(utterance);
+    } catch {}
+  }, []);
+
+  const speakEyeAlert = useCallback(async (level) => {
+    if (lastSpokenEyeAlertRef.current === level) return;
+
+    lastSpokenEyeAlertRef.current = level;
+    const text = level === 2
+      ? 'Critical alert. Your eyes have been closed for 10 seconds. Please open your eyes now, sit upright, and take a break.'
+      : 'Fatigue warning. Your eyes have been closed for 7 seconds. Please open your eyes, look away from the screen, and rest for a moment.';
+
+    await speakText(text, {
+      rate: level === 2 ? 1.05 : 0.95,
+      pitch: level === 2 ? 1.15 : 1,
+    });
+  }, [speakText]);
+
+  const speakFatigueSuggestion = useCallback((message) => {
+    const base = message || FATIGUE_ALERT_MESSAGE;
+    if (lastSpokenFatigueRef.current === base) return;
+    lastSpokenFatigueRef.current = base;
+    speakText(base, { rate: 0.92, pitch: 1 });
+  }, [speakText]);
+
+  const showVoiceFeedback = useCallback((kind, spokenMessage=null) => {
+    const feedback = VOICE_FEEDBACK[kind];
+    const feedbackKey = `${kind}:${spokenMessage || feedback?.message || ''}`;
+    if (!feedback || lastFeedbackKindRef.current === feedbackKey) return;
+
+    lastFeedbackKindRef.current = feedbackKey;
+    setVoiceFeedback({...feedback, kind});
+    playAlertSound(feedback.level);
+
+    clearTimeout(voiceSpeakDelayRef.current);
+    voiceSpeakDelayRef.current = setTimeout(() => {
+      speakText(spokenMessage || feedback.message, {
+        rate: kind === 'eyes' || kind === 'drowsy' ? 1.02 : 0.95,
+        pitch: kind === 'happy' || kind === 'normal' ? 1.08 : 1,
+      });
+    }, 450);
+
+    clearTimeout(voiceFeedbackTimerRef.current);
+    voiceFeedbackTimerRef.current = setTimeout(() => {
+      setVoiceFeedback(null);
+    }, 6500);
+  }, [playAlertSound, speakText]);
+
   useEffect(() => {
-    return () => alertToneTimers.current.forEach(clearTimeout);
+    return () => {
+      alertToneTimers.current.forEach(clearTimeout);
+      clearTimeout(voiceFeedbackTimerRef.current);
+      clearTimeout(voiceSpeakDelayRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const unlockVoice = () => {
+      if (voiceUnlockedRef.current) return;
+      voiceUnlockedRef.current = true;
+      try {
+        if ('speechSynthesis' in window) window.speechSynthesis.resume();
+      } catch {}
+    };
+    window.addEventListener('pointerdown', unlockVoice, { once:true });
+    window.addEventListener('keydown', unlockVoice, { once:true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockVoice);
+      window.removeEventListener('keydown', unlockVoice);
+    };
   }, []);
 
   useEffect(() => {
@@ -443,18 +593,64 @@ export default function App() {
           top_area:        d.top_area        ?? '—',
           focus_duration:  d.focus_duration  ?? 0,
           productivity:    d.productivity    ?? 0,
+          screen_fatigue_alert_id: d.screen_fatigue_alert_id ?? 0,
+          eye_close_recovery_id: d.eye_close_recovery_id ?? 0,
         });
-        if (d.fatigue_alert_shown && d.fatigue_alert_msg) {
-          log('😴 ' + d.fatigue_alert_msg, 'warn');
-          setFatigueAlert(d.fatigue_alert_msg);
+        const screenTipId = d.screen_fatigue_alert_id || 0;
+        if (screenTipId && screenTipId !== lastScreenFatigueAlertRef.current) {
+          lastScreenFatigueAlertRef.current = screenTipId;
+          const msg = d.screen_fatigue_alert_msg || 'You have been using the screen continuously. Look away from the screen and blink gently.';
+          screenFatiguePopupUntilRef.current = Date.now() + 10000;
+          log('👁️ ' + msg, 'warn');
+          setFatigueAlert(msg);
+          showVoiceFeedback('screen', msg);
+        }
+
+        const recoveryId = d.eye_close_recovery_id || 0;
+        if (recoveryId && recoveryId !== lastEyeRecoveryRef.current) {
+          lastEyeRecoveryRef.current = recoveryId;
+          const msg = d.eye_close_recovery_msg || 'Continue only when your eyes feel comfortable.';
+          log('✅ ' + msg, 'info');
+          showVoiceFeedback('recovery', msg);
+        }
+
+        if (d.fatigue_alert_shown) {
+          const msg = d.fatigue_alert_msg || FATIGUE_ALERT_MESSAGE;
+          log('😴 ' + msg, 'warn');
+          setFatigueAlert(msg);
+          showVoiceFeedback('drowsy', msg);
+        } else if ((d.fatigue_level ?? 0) >= 2) {
+          const msg = 'You look tired. Please look away from the screen, blink slowly, and rest your eyes for a few seconds.';
+          log('😴 ' + msg, 'warn');
+          showVoiceFeedback('tired', msg);
         } else if (!d.fatigue_alert_shown) {
-          setFatigueAlert(null);
+          if (Date.now() > screenFatiguePopupUntilRef.current) {
+            setFatigueAlert(null);
+          }
+          lastSpokenFatigueRef.current = '';
+        }
+
+        const emotion = String(d.emotion || d.emotion_label || d.detected_emotion || '').toLowerCase();
+        if (['tired', 'sleepy', 'drowsy', 'fatigue', 'fatigued'].includes(emotion)) {
+          showVoiceFeedback(
+            'tired',
+            'You look tired. Please look away from the screen, blink slowly, and rest your eyes for a few seconds.'
+          );
+        } else if (['angry', 'anger', 'stress', 'stressed', 'sad', 'fear'].includes(emotion)) {
+          showVoiceFeedback('stressed');
+        } else if (['happy', 'smile', 'joy'].includes(emotion)) {
+          showVoiceFeedback('happy');
+        } else if (
+          ['neutral', 'normal', 'calm'].includes(emotion) ||
+          (!d.fatigue_alert_shown && (d.fatigue_level ?? 0) < 2 && lastFeedbackKindRef.current && lastFeedbackKindRef.current !== 'normal')
+        ) {
+          showVoiceFeedback('normal');
         }
         setEyeAlertLevel(d.eye_alert_level || 0);
       } catch {}
     }, 1500);
     return () => clearInterval(iv);
-  }, [st.tracking, log]);
+  }, [st.tracking, log, showVoiceFeedback]);
 
   // Poll eye alert level (fast, 300ms)
   useEffect(() => {
@@ -467,22 +663,32 @@ export default function App() {
         if (lvl !== eyeAlertLevel) {
           setEyeAlertLevel(lvl);
           if (lvl === 1) {
-            setEyeAlertMsg('⚠️ Eyes closed 7 seconds! Open your eyes.');
+            setEyeAlertMsg('Eyes closed for 7 seconds. Open your eyes, look away from the screen, and take a short rest before it reaches 10 seconds.');
             setShowEyeAlert(true);
-            playAlertSound(1);
+            showVoiceFeedback(
+              'eyes',
+              'Wake up! Eyes closed for 7 seconds. Please open your eyes, look away from the screen, and take a short rest before it reaches 10 seconds.'
+            );
           }
           if (lvl === 2) {
-            setEyeAlertMsg('🚨 WAKE UP! Eyes closed 10 seconds!');
+            setEyeAlertMsg('Critical: eyes closed for 10 seconds. Open your eyes now, sit upright, and pause work.');
             setShowEyeAlert(true);
-            playAlertSound(2);
+            showVoiceFeedback(
+              'eyes',
+              'Critical alert. Your eyes have been closed for 10 seconds. Please open your eyes now, sit upright, and pause work.'
+            );
           }
-          if (lvl === 0) { setShowEyeAlert(false); }
+          if (lvl === 0) {
+            setShowEyeAlert(false);
+            lastSpokenEyeAlertRef.current = 0;
+            try { if ('speechSynthesis' in window) window.speechSynthesis.cancel(); } catch {}
+          }
         }
         if (d.last_action === 'double_click') log('🖱️🖱️ Double-blink: OPEN (icon/image)','info');
       } catch {}
     }, 300);
     return () => clearInterval(iv);
-  }, [st.tracking, eyeAlertLevel, log, playAlertSound]);
+  }, [st.tracking, eyeAlertLevel, log, playAlertSound, showVoiceFeedback]);
 
   const gazeCursorX = (st.gaze_x_pct / 100) * window.innerWidth;
   const gazeCursorY = (st.gaze_y_pct / 100) * window.innerHeight;
@@ -565,7 +771,11 @@ export default function App() {
     const ac    = activeColor || C.lo;
     return (
       <div
-        ref={el => { gazeRefs.current[id] = { el, onGazeClick: onClick }; }}
+        ref={el => {
+          if (!id) return;
+          if (el) gazeRefs.current[id] = { el, onGazeClick: onClick };
+          else delete gazeRefs.current[id];
+        }}
         onClick={onClick}
         style={{
           position:'relative', overflow:'hidden', cursor:'pointer',
@@ -596,6 +806,7 @@ export default function App() {
       const d = await r.json();
       setSt(p=>({...p, tracking:d.tracking}));
       log(d.tracking ? '▶ Tracking STARTED' : '⏹ Tracking STOPPED', 'info');
+      setTimeout(() => { loadSessions(); loadStats(); }, 300);
     } catch { log('Connection error — is backend running?','err'); }
   };
 
@@ -643,6 +854,22 @@ export default function App() {
 
   const loadSessions    = async () => { try { const r=await fetch(`${API}/sessions?limit=20`); setSessions(await r.json()); } catch {} };
   const loadScreenshots = async () => { try { const r=await fetch(`${API}/screenshots`); setShots(await r.json()); } catch {} };
+  const deleteScreenshot = async (filename) => {
+    if (!filename) return;
+    try {
+      const r = await fetch(`${API}/screenshots/${encodeURIComponent(filename)}`, {method:'DELETE'});
+      const d = await r.json();
+      if (d.success) {
+        setShots(prev => prev.filter(s => s.filename !== filename));
+        if (selectedShot === filename) setSelectedShot(null);
+        log(`Deleted ${filename}`, 'info');
+      } else {
+        log('Screenshot delete failed', 'err');
+      }
+    } catch {
+      log('Screenshot delete failed', 'err');
+    }
+  };
   const loadStats       = async () => {
     try {
       const [td,dl,at] = await Promise.all([
@@ -730,6 +957,31 @@ export default function App() {
       </div>
     )}
 
+    {/* ── VOICE FEEDBACK VISUAL MESSAGE ─────────────────────────── */}
+    {voiceFeedback && (
+      <div style={{position:'fixed',top:fatigueAlert ? 168 : 24,right:24,
+        zIndex:10000,background:'#06111f',border:`2px solid ${voiceFeedback.color}`,
+        borderRadius:8,padding:'16px 20px',minWidth:280,maxWidth:360,
+        boxShadow:`0 0 28px ${voiceFeedback.color}55,0 4px 24px #0008`,
+        animation:'fadeInDown 0.35s ease'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
+          <div style={{width:10,height:10,borderRadius:10,background:voiceFeedback.color,
+            boxShadow:`0 0 10px ${voiceFeedback.color}`}}/>
+          <div style={{fontFamily:"'Orbitron',monospace",fontSize:11,
+            color:voiceFeedback.color,fontWeight:900,letterSpacing:2}}>
+            {voiceFeedback.title}
+          </div>
+        </div>
+        <div style={{fontSize:13,color:C.tx,lineHeight:1.45}}>
+          {voiceFeedback.message}
+        </div>
+        <div style={{height:3,background:C.bdr,borderRadius:3,overflow:'hidden',marginTop:12}}>
+          <div style={{height:'100%',width:'100%',background:voiceFeedback.color,
+            animation:'pulse 1s ease-in-out infinite'}}/>
+        </div>
+      </div>
+    )}
+
     {/* ── EYE ALERT BANNER (7s=warning, 10s=critical) ─────────── */}
     {eyeAlertLevel > 0 && (
       <div style={{position:'fixed',top:0,left:0,right:0,zIndex:9998,
@@ -741,7 +993,7 @@ export default function App() {
         <span style={{fontFamily:"'Orbitron',monospace",fontSize:12,color:'#fff',fontWeight:700,letterSpacing:2}}>
           {eyeAlertLevel===2
             ? 'CRITICAL — EYES CLOSED 10s — OPEN YOUR EYES NOW!'
-            : 'WARNING — EYES CLOSED 7s — YOU LOOK TIRED, PLEASE TAKE A BREAK'}
+            : 'WARNING — EYES CLOSED 7s — OPEN YOUR EYES AND TAKE A BREAK'}
         </span>
         <span style={{fontSize:20}}>{eyeAlertLevel===2?'🚨':'⚠️'}</span>
       </div>
@@ -802,20 +1054,23 @@ export default function App() {
     )}
 
     {/* Eye cursor dot */}
-    {st.tracking && st.face_detected && (
+    {st.tracking && (
       <div style={{
         position:'fixed', left:gazeCursorX-14, top:gazeCursorY-14,
         width:28, height:28, pointerEvents:'none', zIndex:9998,
+        opacity: st.face_detected ? 1 : 0.45,
         transition:'left 0.05s linear, top 0.05s linear',
       }}>
         <div style={{position:'absolute',inset:0,borderRadius:'50%',
-          border:`2px solid ${C.lo}`,boxShadow:`0 0 12px ${C.lo}88`,
+          border:`2px solid ${st.face_detected ? C.lo : C.mu}`,
+          boxShadow:`0 0 12px ${st.face_detected ? C.lo : C.mu}88`,
           animation:'blink-d 2s infinite'}}/>
         <div style={{position:'absolute',top:'50%',left:'50%',
           transform:'translate(-50%,-50%)',width:8,height:8,borderRadius:'50%',
-          background:C.lo,boxShadow:`0 0 8px ${C.lo}`}}/>
-        <div style={{position:'absolute',top:'50%',left:0,right:0,height:1,background:`${C.lo}66`,transform:'translateY(-50%)'}}/>
-        <div style={{position:'absolute',left:'50%',top:0,bottom:0,width:1,background:`${C.lo}66`,transform:'translateX(-50%)'}}/>
+          background:st.face_detected ? C.lo : C.mu,
+          boxShadow:`0 0 8px ${st.face_detected ? C.lo : C.mu}`}}/>
+        <div style={{position:'absolute',top:'50%',left:0,right:0,height:1,background:`${st.face_detected ? C.lo : C.mu}66`,transform:'translateY(-50%)'}}/>
+        <div style={{position:'absolute',left:'50%',top:0,bottom:0,width:1,background:`${st.face_detected ? C.lo : C.mu}66`,transform:'translateX(-50%)'}}/>
       </div>
     )}
 
@@ -1106,7 +1361,7 @@ export default function App() {
           </div>
           <PctMeter label="GAZE X (LEFT → RIGHT)" value={st.gaze_x_pct} color={C.lo} hint={`X: ${st.gaze_x}px`} />
           <PctMeter label="GAZE Y (TOP → BOTTOM)" value={st.gaze_y_pct} color={C.ro} hint={`Y: ${st.gaze_y}px`} />
-          {[['📷','Camera',st.tracking,'640×480'],['🧑','FaceMesh',st.face_detected,'OK'],
+          {[['📷','Camera',st.camera_open,st.camera_open?'OPEN':'NO CAMERA'],['🧑','FaceMesh',st.face_detected,'OK'],
             ['👁️','Eye Tracker',st.tracking,`(${st.gaze_x},${st.gaze_y})`],
             ['🖱️','Cursor',st.tracking,'ACTIVE'],['📸','Screenshot',true,`${st.screenshot_count} saved`],
             ['🔍','Zoom',st.tracking,`Lv${st.zoom_level}`],['🌡️','Heatmap',st.tracking,`${heatPts.length} pts`],
@@ -1537,7 +1792,7 @@ export default function App() {
               <option key={s.id} value={s.id}>Session #{s.id} — {s.date} ({s.blinks} blinks)</option>
             ))}
           </select>
-          <button onClick={()=>{fetch(`${API}/fatigue/reset`,{method:'POST'});setFatigue({fatigue_level:0,drowsy_events:0,blink_rate_pm:0,eyes_closed_sec:0,focus_zones:{},top_area:'—',focus_duration:0,productivity:0});log('🔄 Fatigue + analytics reset','info');}}
+          <button onClick={()=>{fetch(`${API}/fatigue/reset`,{method:'POST'});setFatigue({fatigue_level:0,drowsy_events:0,blink_rate_pm:0,eyes_closed_sec:0,focus_zones:{},top_area:'—',focus_duration:0,productivity:0,screen_fatigue_alert_id:0,eye_close_recovery_id:0});log('🔄 Fatigue + analytics reset','info');}}
             style={{padding:'6px 14px',border:`1px solid #f59e0b`,background:'transparent',color:'#f59e0b',fontFamily:"'Orbitron',monospace",fontSize:8,cursor:'pointer'}}>
             🔄 RESET ANALYTICS
           </button>
@@ -1785,6 +2040,14 @@ export default function App() {
                     <div style={{fontSize:9,color:C.lo,fontFamily:"'Orbitron',monospace",
                       overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.filename}</div>
                     <div style={{fontSize:8,color:C.mu,marginTop:3}}>{s.timestamp||''}</div>
+                    <button
+                      onClick={(e)=>{ e.stopPropagation(); deleteScreenshot(s.filename); }}
+                      style={{marginTop:8,width:'100%',padding:'7px 10px',
+                        border:'1px solid #ef4444',background:'transparent',
+                        color:'#ef4444',fontFamily:"'Share Tech Mono',monospace",
+                        fontSize:9,cursor:'pointer',letterSpacing:1}}>
+                      DELETE
+                    </button>
                   </div>
                 </div>
               ))}

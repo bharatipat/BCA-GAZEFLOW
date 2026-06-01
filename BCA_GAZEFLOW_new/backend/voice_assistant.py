@@ -50,6 +50,7 @@ class VoiceAssistant:
         self.listening   = False
         self.last_command = ""
         self.last_result  = ""
+        self.status_message = ""
         self.log          = []
         self._thread      = None
         self._lock        = threading.Lock()
@@ -140,7 +141,14 @@ class VoiceAssistant:
         if self.running:
             return True, "Voice assistant already running"
         if not SR_AVAILABLE:
-            return False, "SpeechRecognition not installed — run: pip install SpeechRecognition pyaudio"
+            self.last_result = "SpeechRecognition not installed - browser voice fallback can still work"
+            return False, self.last_result
+        try:
+            import pyaudio  # noqa: F401
+        except Exception:
+            self.last_result = "PyAudio/microphone support missing - browser voice fallback can still work"
+            return False, self.last_result
+        self.status_message = "Starting voice assistant"
         self.running  = True
         self._thread  = threading.Thread(
             target=self._listen_loop, daemon=True, name="voice-listener"
@@ -152,6 +160,7 @@ class VoiceAssistant:
     def stop(self):
         self.running   = False
         self.listening = False
+        self.status_message = "Voice assistant stopped"
         return True, "Voice assistant stopped"
 
     # ── Command handling ──────────────────────────────────────────
@@ -193,6 +202,7 @@ class VoiceAssistant:
             "listening":        self.listening,
             "last_command":     self.last_command,
             "last_result":      self.last_result,
+            "status_message":    self.status_message,
             "log":              recent,
             "speech_available": SR_AVAILABLE,
             "tts_available":    self._tts_ok or True,   # SAPI is always available on Windows
@@ -203,12 +213,21 @@ class VoiceAssistant:
         try:
             mic = sr.Microphone()
             with mic as source:
-                self.on_status("Calibrating microphone…")
+                self.status_message = "Calibrating microphone"
+                self.on_status(self.status_message)
                 self._recognizer.adjust_for_ambient_noise(source, duration=1)
         except Exception as exc:
             self.running       = False
             self.listening     = False
             self.last_result   = f"microphone error: {exc}"
+            self.status_message = self.last_result
+            with self._lock:
+                self.log = (self.log + [{
+                    "time": datetime.now().strftime("%H:%M:%S"),
+                    "command": "voice start",
+                    "action": "",
+                    "result": self.last_result,
+                }])[-50:]
             self.on_status(self.last_result)
             return
 
@@ -216,24 +235,31 @@ class VoiceAssistant:
             try:
                 with mic as source:
                     self.listening = True
+                    self.status_message = "Listening"
                     audio = self._recognizer.listen(source, timeout=5, phrase_time_limit=6)
                 self.listening = False
+                self.status_message = "Recognizing speech"
 
                 try:
                     text = self._recognizer.recognize_google(audio, language="en-US")
                 except sr.UnknownValueError:
+                    self.status_message = "Listening"
                     continue
                 except sr.RequestError as exc:
                     self.last_result = f"speech service error: {exc}"
+                    self.status_message = self.last_result
                     time.sleep(2)
                     continue
 
                 self.handle_text(text)
+                self.status_message = "Listening"
 
             except sr.WaitTimeoutError:
                 self.listening = False
+                self.status_message = "Listening"
             except Exception as exc:
                 self.listening   = False
                 self.last_result = f"listen error: {exc}"
+                self.status_message = self.last_result
                 self.on_status(self.last_result)
                 time.sleep(1)

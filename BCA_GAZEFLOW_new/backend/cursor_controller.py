@@ -140,8 +140,8 @@ class CursorController:
     def scroll_down(self):  pyautogui.scroll(-3)
 
     # ── Zoom ───────────────────────────────────────────────────────
-    def zoom_in(self):    pyautogui.hotkey('ctrl', '+');  print("🔍 Zoom IN")
-    def zoom_out(self):   pyautogui.hotkey('ctrl', '-');  print("🔍 Zoom OUT")
+    def zoom_in(self):    pyautogui.hotkey('ctrl', '+');  print("🔍 Zoom IN (Ctrl++)")
+    def zoom_out(self):   pyautogui.hotkey('ctrl', '-');  print("🔍 Zoom OUT (Ctrl+-)")
     def zoom_reset(self): pyautogui.hotkey('ctrl', '0');  print("🔍 Zoom RESET")
 
     # ── Windows Desktop Controls ───────────────────────────────────
@@ -199,6 +199,11 @@ class CursorController:
                 subprocess.Popen('explorer.exe')
             elif low == 'cmd':
                 subprocess.Popen('cmd.exe')
+            elif low in ('chrome', 'google chrome', 'google', 'browser'):
+                if os.name == 'nt':
+                    subprocess.Popen(['cmd', '/c', 'start', '', 'chrome', 'https://www.google.com'])
+                else:
+                    subprocess.Popen(['google-chrome', 'https://www.google.com'])
             else:
                 pyautogui.press('win')
                 time.sleep(0.5)

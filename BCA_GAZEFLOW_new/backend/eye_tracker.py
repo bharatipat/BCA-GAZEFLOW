@@ -22,9 +22,9 @@ ALPHA         = 0.15   # EWMA smoothing
 
 # ── Blink hold thresholds (seconds) ──────────────────────────
 SHORT_BLINK    = 0.4   # < 0.4s       → single left click
-SNAP_BLINK     = 1.0   # 1s hold      → screenshot (SNAP)
-ZOOM_IN_BLINK  = 2.0   # 2s hold      → zoom in
-ZOOM_OUT_BLINK = 3.0   # 3s hold      → zoom out
+SNAP_BLINK     = 1.0   # both-eyes 1s hold → screenshot (SNAP)
+ZOOM_IN_BLINK  = 2.0   # both-eyes 2s hold → zoom in
+ZOOM_OUT_BLINK = 3.0   # both-eyes 3s hold → zoom out
 ONE_EYE_MOUSE_HOLD = 5.0  # one-eye hold -> mouse button
 
 DROWSY_DUR     = 2.0   # 2s+          → drowsy alert
@@ -104,8 +104,8 @@ class EyeTracker:
           right_click  → left-eye-only wink
           left_mouse_5s  -> left-eye-only hold for mouse left button
           right_mouse_5s -> right-eye-only hold for mouse right button
-          screenshot   → 1s hold
-          zoom_in/out  → 2s / 3s hold
+          screenshot   → both eyes closed 1s
+          zoom_in/out  → both eyes closed 2s / 3s
           drowsy       → eyes closed 2s+
           alert_7s     → eyes closed 7s  (WARNING)
           alert_10s    → eyes closed 10s (CRITICAL)

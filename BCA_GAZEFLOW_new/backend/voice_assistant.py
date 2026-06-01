@@ -8,6 +8,7 @@ import queue
 import time
 import subprocess
 import sys
+import socket
 from datetime import datetime
 
 try:
@@ -42,6 +43,14 @@ def _sapi_speak(text):
         print(f"[TTS-SAPI] error: {e}")
 
 
+def _is_speech_network_error(exc):
+    text = str(exc).lower()
+    return (
+        isinstance(exc, (TimeoutError, socket.timeout, OSError))
+        and ("10060" in text or "timed out" in text or "timeout" in text)
+    ) or "winerror 10060" in text
+
+
 class VoiceAssistant:
     def __init__(self, on_command, on_status=None):
         self.on_command  = on_command
@@ -50,6 +59,7 @@ class VoiceAssistant:
         self.listening   = False
         self.last_command = ""
         self.last_result  = ""
+        self.last_error   = ""
         self.status_message = ""
         self.log          = []
         self._thread      = None
@@ -178,6 +188,7 @@ class VoiceAssistant:
         action = response.get("action")
         self.last_command = cmd
         self.last_result  = result
+        self.last_error   = ""
         entry = {
             "time":    datetime.now().strftime("%H:%M:%S"),
             "command": cmd,
@@ -202,6 +213,7 @@ class VoiceAssistant:
             "listening":        self.listening,
             "last_command":     self.last_command,
             "last_result":      self.last_result,
+            "last_error":       self.last_error,
             "status_message":    self.status_message,
             "log":              recent,
             "speech_available": SR_AVAILABLE,
@@ -220,6 +232,7 @@ class VoiceAssistant:
             self.running       = False
             self.listening     = False
             self.last_result   = f"microphone error: {exc}"
+            self.last_error    = self.last_result
             self.status_message = self.last_result
             with self._lock:
                 self.log = (self.log + [{
@@ -243,11 +256,43 @@ class VoiceAssistant:
                 try:
                     text = self._recognizer.recognize_google(audio, language="en-US")
                 except sr.UnknownValueError:
+                    self.last_result = "speech not understood"
+                    self.status_message = "Could not understand speech"
+                    with self._lock:
+                        self.log = (self.log + [{
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "command": "(speech unclear)",
+                            "action": "",
+                            "result": self.last_result,
+                        }])[-50:]
                     self.status_message = "Listening"
                     continue
                 except sr.RequestError as exc:
+                    if _is_speech_network_error(exc):
+                        self.running = False
+                        self.listening = False
+                        self.last_result = "Python speech service timed out - browser microphone fallback is active"
+                        self.last_error = self.last_result
+                        self.status_message = self.last_result
+                        with self._lock:
+                            self.log = (self.log + [{
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "command": "(python speech timeout)",
+                                "action": "browser_fallback",
+                                "result": self.last_result,
+                            }])[-50:]
+                        self.on_status(self.last_result)
+                        return
                     self.last_result = f"speech service error: {exc}"
+                    self.last_error = self.last_result
                     self.status_message = self.last_result
+                    with self._lock:
+                        self.log = (self.log + [{
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "command": "(speech service)",
+                            "action": "",
+                            "result": self.last_result,
+                        }])[-50:]
                     time.sleep(2)
                     continue
 
@@ -258,8 +303,24 @@ class VoiceAssistant:
                 self.listening = False
                 self.status_message = "Listening"
             except Exception as exc:
+                if _is_speech_network_error(exc):
+                    self.running = False
+                    self.listening = False
+                    self.last_result = "Python speech service timed out - browser microphone fallback is active"
+                    self.last_error = self.last_result
+                    self.status_message = self.last_result
+                    with self._lock:
+                        self.log = (self.log + [{
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "command": "(python speech timeout)",
+                            "action": "browser_fallback",
+                            "result": self.last_result,
+                    }])[-50:]
+                    self.on_status(self.last_result)
+                    return
                 self.listening   = False
                 self.last_result = f"listen error: {exc}"
+                self.last_error  = self.last_result
                 self.status_message = self.last_result
                 self.on_status(self.last_result)
                 time.sleep(1)

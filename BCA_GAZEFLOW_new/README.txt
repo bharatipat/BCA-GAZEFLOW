@@ -17,9 +17,9 @@
   Short blink  (< 0.4s)   → Left Click
   Double blink (< 0.7s)   → Double Click  ← OPEN ICON / IMAGE / APP
   Left eye wink            → Right Click
-  Hold 1s                  → Screenshot (SNAP)
-  Hold 2s                  → Zoom IN
-  Hold 3s                  → Zoom OUT
+  Close both eyes 1s       → Screenshot (SNAP)
+  Close both eyes 2s       → Zoom IN  (Ctrl + +)
+  Close both eyes 3s       → Zoom OUT (Ctrl + -)
   Hold 4s+                 → STOP tracking (heat off, scroll on)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

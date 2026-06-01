@@ -339,6 +339,15 @@ export default function App() {
   const [speedSaving,    setSpeedSaving]    = useState(false);
   const [voiceStatus,    setVoiceStatus]    = useState({running:false,listening:false,log:[],speech_available:false,tts_available:false,last_command:'',last_result:''});
   const [voiceCmd,       setVoiceCmd]       = useState('');
+  const [browserVoice,   setBrowserVoice]   = useState({
+    supported: typeof window !== 'undefined' && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition),
+    running:false,
+    listening:false,
+    transcript:'',
+    error:'',
+  });
+  const browserVoiceRef = useRef(null);
+  const browserVoiceShouldRunRef = useRef(false);
 
   // Gaze scroll state
   const [scrollZone,    setScrollZone]    = useState(null);
@@ -543,6 +552,90 @@ export default function App() {
       const r = await fetch(`${API}/voice/status`);
       setVoiceStatus(await r.json());
     } catch {}
+  }, []);
+
+  const submitRecognizedVoiceCommand = useCallback(async (command, source='voice') => {
+    const text = (command || '').trim();
+    if (!text) return;
+    try {
+      const r = await fetch(`${API}/voice/command`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({command:text})
+      });
+      const d = await r.json();
+      setVoiceStatus(prev => ({
+        ...prev,
+        last_command: d.command || text,
+        last_result: d.result || '',
+      }));
+      loadVoiceStatus();
+      log(`${source === 'browser' ? '🎙 Browser' : '🎙'} ${text} → ${d.action || d.result}`, d.ok ? 'info' : 'err');
+    } catch {
+      log('Voice command failed','err');
+    }
+  }, [loadVoiceStatus, log]);
+
+  const startBrowserVoice = useCallback(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setBrowserVoice(p => ({...p, supported:false, running:false, listening:false, error:'Browser speech recognition unavailable'}));
+      return false;
+    }
+
+    browserVoiceShouldRunRef.current = true;
+    try {
+      if (browserVoiceRef.current) {
+        try { browserVoiceRef.current.stop(); } catch {}
+      }
+
+      const rec = new SpeechRecognition();
+      rec.lang = 'en-US';
+      rec.continuous = true;
+      rec.interimResults = false;
+
+      rec.onstart = () => {
+        setBrowserVoice(p => ({...p, supported:true, running:true, listening:true, error:''}));
+      };
+      rec.onresult = (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const result = event.results[i];
+          if (!result.isFinal) continue;
+          const transcript = (result[0]?.transcript || '').trim();
+          if (!transcript) continue;
+          setBrowserVoice(p => ({...p, transcript, error:''}));
+          submitRecognizedVoiceCommand(transcript, 'browser');
+        }
+      };
+      rec.onerror = (event) => {
+        const error = event.error || 'speech recognition error';
+        setBrowserVoice(p => ({...p, listening:false, error}));
+        if (!['no-speech', 'aborted'].includes(error)) {
+          log(`Browser voice: ${error}`, 'err');
+        }
+      };
+      rec.onend = () => {
+        setBrowserVoice(p => ({...p, listening:false, running:browserVoiceShouldRunRef.current}));
+        if (browserVoiceShouldRunRef.current) {
+          setTimeout(() => {
+            try { rec.start(); } catch {}
+          }, 350);
+        }
+      };
+
+      browserVoiceRef.current = rec;
+      rec.start();
+      return true;
+    } catch (err) {
+      setBrowserVoice(p => ({...p, running:false, listening:false, error:String(err?.message || err)}));
+      return false;
+    }
+  }, [log, submitRecognizedVoiceCommand]);
+
+  const stopBrowserVoice = useCallback(() => {
+    browserVoiceShouldRunRef.current = false;
+    try { browserVoiceRef.current?.stop(); } catch {}
+    setBrowserVoice(p => ({...p, running:false, listening:false}));
   }, []);
 
   useEffect(() => {
@@ -823,11 +916,19 @@ export default function App() {
       const r = await fetch(`${API}/voice/start`, {method:'POST'});
       const d = await r.json();
       setVoiceStatus(d);
-      log(d.message || 'Voice assistant started', d.ok ? 'info' : 'err');
-    } catch { log('Voice start failed','err'); }
+      const browserStarted = startBrowserVoice();
+      const message = browserStarted
+        ? 'Voice assistant started with browser microphone fallback'
+        : (d.message || 'Voice assistant started');
+      log(message, d.ok || browserStarted ? 'info' : 'err');
+    } catch {
+      if (startBrowserVoice()) log('Browser voice assistant started', 'info');
+      else log('Voice start failed','err');
+    }
   };
 
   const stopVoice = async () => {
+    stopBrowserVoice();
     try {
       const r = await fetch(`${API}/voice/stop`, {method:'POST'});
       const d = await r.json();
@@ -839,17 +940,8 @@ export default function App() {
   const sendVoiceCommand = async (cmd) => {
     const command = (cmd || voiceCmd).trim();
     if (!command) return;
-    try {
-      const r = await fetch(`${API}/voice/command`, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({command})
-      });
-      const d = await r.json();
-      setVoiceCmd('');
-      loadVoiceStatus();
-      log(`🎙 ${command} → ${d.action || d.result}` , d.ok ? 'info' : 'err');
-    } catch { log('Voice command failed','err'); }
+    await submitRecognizedVoiceCommand(command);
+    setVoiceCmd('');
   };
 
   const loadSessions    = async () => { try { const r=await fetch(`${API}/sessions?limit=20`); setSessions(await r.json()); } catch {} };
@@ -1217,8 +1309,8 @@ export default function App() {
             ['⚙️','SPEED CONTROL','Set cursor speed\nSmoothing & deadzone','speed','#f59e0b'],
             ['🎙️','VOICE ASSISTANT','Speak commands\nControl the PC','voice','#f472b6'],
             ['👁️','GAZE HEATMAP','See where you look\nOverlay on screen','heatmap',C.pp],
-            ['📸','SCREENSHOT','Hold blink 1.5s\n→ screenshot!','screenshots',C.lc],
-            ['🔍','ZOOM IN/OUT','Hold blink 2.5s\n→ zoom toggle','cursor',C.rc],
+            ['📸','SCREENSHOT','Both eyes 1s\n→ screenshot!','screenshots',C.lc],
+            ['🔍','ZOOM IN/OUT','Both eyes 2s → zoom in\nBoth eyes 3s → zoom out','cursor',C.rc],
             ['📊','DAILY STATS','Track per day\nSQLite database','stats',C.pp],
           ].map(([ic,t,d,goto,c])=>(
             <GazeBtn key={t} id={`home-card-${goto}-${t}`}
@@ -1246,9 +1338,9 @@ export default function App() {
               ['LEFT EYE\nWINK','wink left eye','🖱️ Right Click\n(context menu)',C.pp],
               ['LEFT EYE\nHOLD','5 sec','🖱️ Left Mouse\nbutton',C.lc],
               ['RIGHT EYE\nHOLD','5 sec','🖱️ Right Mouse\nbutton',C.pp],
-              ['HOLD 1 SEC','📸 SNAP','Screenshot\n(auto save)',C.lc],
-              ['HOLD 2 SEC','🔍 ZOOM IN','Screen zooms in\n(Ctrl + +)','#34d399'],
-              ['HOLD 3 SEC','🔍 ZOOM OUT','Screen zooms out\n(Ctrl + -)','#f59e0b'],
+              ['BOTH EYES\n1 SEC','📸 SNAP','Screenshot\n(auto save)',C.lc],
+              ['BOTH EYES\n2 SEC','🔍 ZOOM IN','Screen zooms in\n(Ctrl + +)','#34d399'],
+              ['BOTH EYES\n3 SEC','🔍 ZOOM OUT','Screen zooms out\n(Ctrl + -)','#f59e0b'],
               ['HOLD 4 SEC+','⛔ STOP','Heat OFF\nScroll ON\nFinal Snap','#ef4444'],
             ].map(([lbl,dur,act,c])=>(
               <div key={lbl} style={{background:C.sf,border:`2px solid ${c}`,padding:'12px',textAlign:'center',borderRadius:6}}>
@@ -1390,9 +1482,9 @@ export default function App() {
               {[['SHORT BLINK','< 0.4s','🖱️ Mouse Click',C.lc],
                 ['DOUBLE BLINK','2× < 0.6s','🖱️🖱️ Double Click',C.lo],
                 ['LEFT WINK','wink left','🖱️ Right Click',C.pp],
-                ['HOLD 1 SEC','📸 SNAP','Screenshot',C.lc],
-                ['HOLD 2 SEC','🔍 ZOOM IN','Ctrl + +','#34d399'],
-                ['HOLD 3 SEC','🔍 ZOOM OUT','Ctrl + -','#f59e0b'],
+                ['BOTH EYES 1 SEC','📸 SNAP','Screenshot',C.lc],
+                ['BOTH EYES 2 SEC','🔍 ZOOM IN','Ctrl + +','#34d399'],
+                ['BOTH EYES 3 SEC','🔍 ZOOM OUT','Ctrl + -','#f59e0b'],
                 ['HOLD 4 SEC+','⛔ STOP','Heat OFF · Scroll ON','#ef4444'],
               ].map(([t,d,a,c])=>(
                 <div key={t} style={{background:C.sf,border:`2px solid ${c}`,padding:'10px 12px',borderRadius:5}}>
@@ -1533,12 +1625,18 @@ export default function App() {
     {/* ══════════ VOICE ASSISTANT ══════════ */}
     {tab==='voice' && (() => {
       const VC = '#f472b6';
+      const voiceRunning = voiceStatus.running || browserVoice.running;
+      const voiceListening = voiceStatus.listening || browserVoice.listening;
+      const pythonVoiceError = voiceStatus.last_error || '';
+      const commandResultOnly = ['unrecognized', 'empty command'].includes(String(pythonVoiceError).toLowerCase());
+      const voiceError = browserVoice.error || (!browserVoice.running && !commandResultOnly ? pythonVoiceError : '');
+      const pythonFallbackNotice = browserVoice.running && pythonVoiceError && !commandResultOnly;
       const quickCommands = [
         'camera on','camera off','open camera','close app','minimize all',
         'click','double click','right click','scroll up','scroll down',
         'zoom in','zoom out','show desktop','switch window','file explorer',
         'task manager','open notepad','open calculator','open google',
-        'open settings','copy','paste','save','lock pc',
+        'open settings','copy','paste','save','volume up','mute','lock pc',
       ];
       const examples = [
         ['Mouse', 'click, double click, right click, scroll up, scroll down'],
@@ -1556,25 +1654,40 @@ export default function App() {
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={VC} strokeWidth="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
             FULL PC VOICE ASSISTANT
           </div>
-          <button onClick={voiceStatus.running ? stopVoice : startVoice}
-            style={{padding:'12px 28px',border:'none',background:voiceStatus.running?'#ef4444':VC,color:'#000',
+          <button onClick={voiceRunning ? stopVoice : startVoice}
+            style={{padding:'12px 28px',border:'none',background:voiceRunning?'#ef4444':VC,color:'#000',
               fontFamily:"'Orbitron',monospace",fontSize:12,fontWeight:900,cursor:'pointer',letterSpacing:2}}>
-            {voiceStatus.running ? '⏹ STOP LISTENING' : '▶ START LISTENING'}
+            {voiceRunning ? '⏹ STOP LISTENING' : '▶ START LISTENING'}
           </button>
         </div>
 
-        <div style={{background:C.card,border:`2px solid ${voiceStatus.running?VC:C.bdr}`,borderLeft:`4px solid ${VC}`,padding:'18px 22px',marginBottom:14,
+        <div style={{background:C.card,border:`2px solid ${voiceRunning?VC:C.bdr}`,borderLeft:`4px solid ${VC}`,padding:'18px 22px',marginBottom:14,
           display:'grid',gridTemplateColumns:'1.2fr .8fr',gap:16,alignItems:'center'}}>
           <div>
-            <div style={{fontFamily:"'Orbitron',monospace",fontSize:18,fontWeight:900,color:voiceStatus.running?VC:C.mu,letterSpacing:2,marginBottom:6}}>
-              {voiceStatus.running ? (voiceStatus.listening ? 'LISTENING...' : 'VOICE READY') : 'VOICE OFF'}
+            <div style={{fontFamily:"'Orbitron',monospace",fontSize:18,fontWeight:900,color:voiceRunning?VC:C.mu,letterSpacing:2,marginBottom:6}}>
+              {voiceRunning ? (voiceListening ? 'LISTENING...' : 'VOICE READY') : 'VOICE OFF'}
             </div>
             <div style={{fontSize:10,color:C.mu,lineHeight:1.7}}>
-              {voiceStatus.running ? 'Speak a command naturally. You can also test commands below.' : 'Start listening to control mouse, windows, apps, keyboard shortcuts, volume, and GazeFlow Project.'}
+              {voiceRunning ? 'Speak a command naturally. Browser fallback sends commands to full PC control automatically.' : 'Start listening to control mouse, windows, apps, keyboard shortcuts, volume, and GazeFlow Project.'}
             </div>
+            {browserVoice.transcript && (
+              <div style={{fontFamily:"'Orbitron',monospace",fontSize:10,color:C.lc,marginTop:8}}>
+                HEARD: "{browserVoice.transcript}"
+              </div>
+            )}
             {voiceStatus.last_command && (
               <div style={{fontFamily:"'Orbitron',monospace",fontSize:10,color:VC,marginTop:8}}>
                 LAST: "{voiceStatus.last_command}" → {voiceStatus.last_result || 'ok'}
+              </div>
+            )}
+            {voiceError && (
+              <div style={{fontSize:9,color:C.rc,marginTop:8,lineHeight:1.5}}>
+                Voice note: {voiceError}. If Python speech is blocked, keep this tab open and allow browser microphone access.
+              </div>
+            )}
+            {pythonFallbackNotice && (
+              <div style={{fontSize:9,color:C.lc,marginTop:8,lineHeight:1.5}}>
+                Browser microphone is handling commands while Python speech is unavailable.
               </div>
             )}
           </div>
@@ -1582,8 +1695,9 @@ export default function App() {
             {[
               ['Speech',voiceStatus.speech_available ? 'READY' : 'MISSING',voiceStatus.speech_available ? C.lc : C.rc],
               ['TTS',voiceStatus.tts_available ? 'READY' : 'OFF',voiceStatus.tts_available ? C.lc : C.mu],
-              ['Mic',voiceStatus.listening ? 'ACTIVE' : 'IDLE',voiceStatus.listening ? VC : C.mu],
-              ['Mode',voiceStatus.running ? 'ON' : 'OFF',voiceStatus.running ? VC : C.mu],
+              ['Python Mic',voiceStatus.listening ? 'ACTIVE' : 'IDLE',voiceStatus.listening ? VC : C.mu],
+              ['Browser Mic',browserVoice.supported ? (browserVoice.listening ? 'ACTIVE' : 'READY') : 'MISSING',browserVoice.listening ? VC : browserVoice.supported ? C.lc : C.rc],
+              ['Mode',voiceRunning ? 'ON' : 'OFF',voiceRunning ? VC : C.mu],
             ].map(([l,v,c])=>(
               <div key={l} style={{background:C.sf,border:`1px solid ${C.bdr}`,padding:'10px',textAlign:'center'}}>
                 <div style={{fontSize:8,color:C.mu,letterSpacing:1,marginBottom:4}}>{l}</div>

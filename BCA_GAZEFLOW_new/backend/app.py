@@ -785,6 +785,26 @@ def _db_update_session(session_id, rec):
              rec['avg_fatigue'], rec['top_area'], rec['productivity'], session_id))
         return cur.rowcount
 
+def _db_refresh_live_session():
+    if _current_session_id is None or not state.get('tracking'):
+        return
+    now = datetime.now()
+    duration = round((now - state['session_start']).total_seconds()) if state.get('session_start') else 0
+    session_rec = {
+        'date':         state.get('session_date', ''),
+        'start_time':   state['session_start'].strftime('%H:%M:%S') if state.get('session_start') else '--:--:--',
+        'end_time':     'LIVE',
+        'duration_sec': duration,
+        'duration_str': _fmt_time(duration),
+        'blinks':       state.get('blinks', 0),
+        'screenshots':  state.get('screenshot_count', 0),
+        'drowsy_events':state.get('drowsy_events', 0),
+        'avg_fatigue':  state.get('fatigue_level', 0),
+        'top_area':     state.get('top_area', '—') or '—',
+        'productivity': state.get('productivity', 0),
+    }
+    _db_update_session(_current_session_id, session_rec)
+
 def _db_get_sessions(limit=50):
     with _db_conn() as c:
         rows = c.execute('SELECT * FROM sessions ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
@@ -1111,6 +1131,7 @@ def video():
 
 @app.route('/status')
 def get_status():
+    _db_refresh_live_session()
     s = dict(state)
     s.pop('heatmap_live', None)
     s.pop('blink_times',  None)
@@ -1373,11 +1394,13 @@ def desk_open_app():
 
 @app.route('/sessions')
 def sessions():
+    _db_refresh_live_session()
     limit = int(request.args.get('limit', 50))
     return jsonify(_db_get_sessions(limit))
 
 @app.route('/stats/today')
 def today():
+    _db_refresh_live_session()
     today_str = datetime.now().strftime('%Y-%m-%d')
     with _db_conn() as c:
         rows = c.execute('SELECT * FROM sessions WHERE date=?', (today_str,)).fetchall()

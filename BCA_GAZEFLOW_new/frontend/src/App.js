@@ -1340,7 +1340,7 @@ export default function App() {
               ['RIGHT EYE\nHOLD','5 sec','🖱️ Right Mouse\nbutton',C.pp],
               ['BOTH EYES\n1 SEC','📸 SNAP','Screenshot\n(auto save)',C.lc],
               ['BOTH EYES\n2 SEC','🔍 ZOOM IN','Screen zooms in\n(Ctrl + +)','#34d399'],
-              ['BOTH EYES\n3 SEC','🔍 ZOOM OUT','Screen zooms out\n(Ctrl + -)','#f59e0b'],
+              ['BOTH EYES\n3 SEC','🔍 ZOOM OUT','Screen zooms out\n(Ctrl - -)','#f59e0b'],
               ['HOLD 4 SEC+','⛔ STOP','Heat OFF\nScroll ON\nFinal Snap','#ef4444'],
             ].map(([lbl,dur,act,c])=>(
               <div key={lbl} style={{background:C.sf,border:`2px solid ${c}`,padding:'12px',textAlign:'center',borderRadius:6}}>

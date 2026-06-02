@@ -90,13 +90,8 @@ app = Flask(__name__)
 CORS(app)
 
 FATIGUE_ALERT_MESSAGE = (
-    "Fatigue detected. You have been using the screen continuously. "
-    "Please take a short break and rest your eyes."
-)
-NEW_USER_WELCOME_MESSAGE = "Welcome. Monitoring has started. You appear alert and attentive."
-NO_FATIGUE_MESSAGE = "No signs of fatigue or drowsiness detected."
-DROWSINESS_ALERT_MESSAGE = (
-    "Warning. Drowsiness detected. Please stop using the system and take a rest immediately."
+    "You have been using the screen continuously. Eye fatigue detected. "
+    "Look away from the screen, blink slowly, and rest your eyes."
 )
 SCREEN_FATIGUE_FIRST_REMINDER_SEC = 20 * 60
 SCREEN_FATIGUE_REPEAT_SEC = 10 * 60
@@ -124,73 +119,6 @@ def _voice_keyboard(action, value):
 
 def _voice_response(action, result="ok", say=None, ok=True):
     return {"ok": ok, "action": action, "result": result, "say": say}
-
-
-def _open_chrome_url(url="https://www.google.com"):
-    """Open Chrome directly when available, with browser fallback."""
-    try:
-        if os.name == "nt":
-            subprocess.Popen(
-                ["cmd", "/c", "start", "", "chrome", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        else:
-            subprocess.Popen(
-                ["google-chrome", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        return True
-    except Exception:
-        try:
-            webbrowser.open(url)
-            return True
-        except Exception as exc:
-            print(f"Chrome launch failed: {exc}")
-            return False
-
-
-def _normalize_voice_command(raw):
-    cmd = " ".join((raw or "").strip().lower().replace("-", " ").split())
-    compact_aliases = {
-        "zoomin": "zoom in",
-        "zoomingin": "zoom in",
-        "zoomout": "zoom out",
-        "zoomingout": "zoom out",
-        "resetzoom": "reset zoom",
-        "zoomreset": "zoom reset",
-        "leftclick": "left click",
-        "rightclick": "right click",
-        "doubleclick": "double click",
-        "middleclick": "middle click",
-        "scrollup": "scroll up",
-        "scrolldown": "scroll down",
-    }
-    cmd = compact_aliases.get(cmd, cmd)
-    prefixes = [
-        "please ", "can you ", "could you ", "would you ",
-        "hey gazeflow ", "gaze flow ", "gazeflow ", "computer ",
-    ]
-    changed = True
-    while changed:
-        changed = False
-        for prefix in prefixes:
-            if cmd.startswith(prefix):
-                cmd = cmd[len(prefix):].strip()
-                changed = True
-    cmd = cmd.replace(" minimise ", " minimize ")
-    if cmd.startswith("the "):
-        cmd = cmd[4:].strip()
-    return cmd
-
-
-def _clean_voice_target(target):
-    target = " ".join((target or "").strip().lower().split())
-    for prefix in ("the ", "my ", "a ", "an "):
-        if target.startswith(prefix):
-            target = target[len(prefix):].strip()
-    return target
 
 
 def _close_chrome():
@@ -256,11 +184,17 @@ def _alarm_7s_warning():
     time.sleep(1.4)  # let beeps finish before speaking
 
     # ── Stage 2: Fatigue alert + rest suggestion ───────────────────
-    voice.speak_queued(DROWSINESS_ALERT_MESSAGE)
+    voice.speak_queued("Warning. Your eyes have been closed for 7 seconds.")
+    time.sleep(2.0)
+    voice.speak_queued("Please open your eyes, look away from the screen, and rest for a moment.")
+    time.sleep(1.5)
+    voice.speak_queued("If you feel sleepy, pause your work before it reaches 10 seconds.")
     time.sleep(2.5)
 
     # ── Stage 3: Breathing guide ───────────────────────────────────
-    voice.speak_queued("Your safety is important.")
+    voice.speak_queued("Breathe in slowly...")
+    time.sleep(3.0)
+    voice.speak_queued("And breathe out. Well done.")
     time.sleep(1.5)
 
     # ── Stage 4: Recovery chime ────────────────────────────────────
@@ -278,15 +212,19 @@ def _alarm_10s_critical():
     time.sleep(2.2)  # let alarm finish
 
     # ── Stage 2: Critical voice alert ─────────────────────────────
-    voice.speak_queued(DROWSINESS_ALERT_MESSAGE)
-    time.sleep(2.5)
+    voice.speak_queued("Critical alert. Eye fatigue detected. Take a short break immediately.")
+    time.sleep(2.0)
+    voice.speak_queued("Your eyes have been closed for 10 seconds!")
+    time.sleep(1.5)
+    voice.speak_queued("Please open your eyes and stop what you are doing.")
+    time.sleep(1.5)
 
     # ── Stage 3: Second siren burst ────────────────────────────────
     beep_pattern([(1600,350,80),(1600,350,80),(1600,350,0)])
     time.sleep(1.5)
 
     # ── Stage 4: Safety message ────────────────────────────────────
-    voice.speak_queued("Your safety is important.")
+    voice.speak_queued("If you feel drowsy, please rest. Your safety is important.")
 
 
 def _set_screen_fatigue_feedback(message, now_t):
@@ -315,7 +253,7 @@ def _maybe_screen_fatigue_feedback(now_t, blink_rate, close_dur):
     ):
         state["last_low_blink_voice_at"] = now_t
         _set_screen_fatigue_feedback(
-            "Fatigue detected. Your blink rate is low while using the screen. Please take a short break and rest your eyes.",
+            "Your blink rate is low while using the screen. Blink slowly a few times, relax your eyes, and look away from the screen.",
             now_t,
         )
         return
@@ -324,9 +262,10 @@ def _maybe_screen_fatigue_feedback(now_t, blink_rate, close_dur):
         screen_time >= SCREEN_FATIGUE_FIRST_REMINDER_SEC
         and now_t - last_tip >= SCREEN_FATIGUE_REPEAT_SEC
     ):
+        minutes = max(1, int(screen_time // 60))
         state["last_screen_fatigue_voice_at"] = now_t
         _set_screen_fatigue_feedback(
-            FATIGUE_ALERT_MESSAGE,
+            f"You have been using the screen continuously for {minutes} minutes. Look away from the screen, blink gently, and close both eyes for 7 to 10 seconds if they feel tired.",
             now_t,
         )
 
@@ -352,7 +291,7 @@ def _send_eye_close_recovery_feedback(close_dur, now_t):
 
 
 def process_voice_command(raw):
-    cmd = _normalize_voice_command(raw)
+    cmd = (raw or "").strip().lower()
     if not cmd:
         return _voice_response(None, "empty command", ok=False)
 
@@ -492,24 +431,18 @@ def process_voice_command(raw):
         "visual studio code": "visual studio code",
         "whatsapp": "whatsapp",
         "spotify": "spotify",
-        "youtube": "chrome",
-        "mail": "outlook",
-        "email": "outlook",
     }
-    open_prefix = next((p for p in ("open ", "launch ", "start ") if cmd.startswith(p)), None)
-    if open_prefix:
-        target = _clean_voice_target(cmd.replace(open_prefix, "", 1))
+    if cmd.startswith("open "):
+        target = cmd.replace("open ", "", 1).strip()
         app = app_aliases.get(target, target)
         if app in ["chrome", "google", "browser"]:
-            if not _open_chrome_url("https://www.google.com"):
-                return _voice_response("open:chrome", "failed", say="Chrome could not be opened", ok=False)
+            webbrowser.open("https://www.google.com")
         else:
             cursor.open_app(app)
         return _voice_response(f"open:{app}", say=f"Opening {target}")
 
-    type_prefix = next((p for p in ("type ", "write ", "enter text ") if cmd.startswith(p)), None)
-    if type_prefix:
-        text = cmd.replace(type_prefix, "", 1).strip()
+    if cmd.startswith("type "):
+        text = cmd.replace("type ", "", 1).strip()
         if text:
             result = _voice_keyboard("type", text)
             return {**result, "say": "Typed"}
@@ -530,14 +463,6 @@ def process_voice_command(raw):
         "refresh": ("hotkey", ["ctrl", "r"], "Refresh"),
         "find": ("hotkey", ["ctrl", "f"], "Find"),
         "print": ("hotkey", ["ctrl", "p"], "Print"),
-        "back": ("hotkey", ["alt", "left"], "Back"),
-        "go back": ("hotkey", ["alt", "left"], "Back"),
-        "forward": ("hotkey", ["alt", "right"], "Forward"),
-        "go forward": ("hotkey", ["alt", "right"], "Forward"),
-        "history": ("hotkey", ["ctrl", "h"], "History"),
-        "downloads": ("hotkey", ["ctrl", "j"], "Downloads"),
-        "address bar": ("hotkey", ["ctrl", "l"], "Address bar"),
-        "search": ("hotkey", ["ctrl", "f"], "Search"),
         "lock pc": ("hotkey", ["win", "l"], "Lock PC"),
         "lock computer": ("hotkey", ["win", "l"], "Lock computer"),
         "enter": ("press", "enter", "Enter"),
@@ -557,14 +482,9 @@ def process_voice_command(raw):
         "volume up": ("press", "volumeup", "Volume up"),
         "volume down": ("press", "volumedown", "Volume down"),
         "mute": ("press", "volumemute", "Mute"),
-        "play": ("press", "playpause", "Play pause"),
-        "pause": ("press", "playpause", "Play pause"),
-        "play pause": ("press", "playpause", "Play pause"),
-        "next track": ("press", "nexttrack", "Next track"),
-        "previous track": ("press", "prevtrack", "Previous track"),
     }
     for phrase, (kind, value, say) in key_commands.items():
-        if f" {phrase} " in f" {cmd} ":
+        if cmd == phrase or phrase in cmd:
             result = _voice_keyboard(kind, value)
             return {**result, "action": f"keyboard:{phrase}", "say": say}
 
@@ -576,7 +496,7 @@ def process_voice_command(raw):
             return _voice_response(f"screenshot:{fn}", say="Screenshot taken")
         return _voice_response("screenshot", "failed", say="Screenshot failed", ok=False)
 
-    if any(p in cmd for p in ["stop voice", "voice stop", "assistant stop", "stop listening", "stop voice assistant"]):
+    if any(p in cmd for p in ["stop voice", "voice stop", "assistant stop"]):
         return _voice_response("voice_stop", say="Voice assistant stopping")
 
     return _voice_response(None, "unrecognized", say="Command not recognized", ok=False)
@@ -650,9 +570,6 @@ state = {
     "eye_close_recovery_id": 0,
     "eye_close_recovery_msg": "",
     "eye_close_recovery_at": 0.0,
-    "monitoring_welcome_spoken": False,
-    "normal_status_spoken": False,
-    "normal_status_after": 0.0,
     # ── HEATMAP ANALYTICS ─────────────────────────────────
     "focus_zones":     {},       # grid cell → dwell time
     "top_area":        "",       # most viewed area label
@@ -692,6 +609,18 @@ def _db_init():
             top_area      TEXT    DEFAULT "—",
             productivity  REAL    DEFAULT 0
         )''')
+        # Migrate old schemas by adding missing columns if needed
+        existing_columns = [row['name'] for row in c.execute("PRAGMA table_info(sessions)").fetchall()]
+        migrations = [
+            ('duration_str', 'TEXT'),
+            ('drowsy_events', 'INTEGER DEFAULT 0'),
+            ('avg_fatigue', 'REAL DEFAULT 0'),
+            ('top_area', 'TEXT DEFAULT "—"'),
+            ('productivity', 'REAL DEFAULT 0'),
+        ]
+        for col_name, col_type in migrations:
+            if col_name not in existing_columns:
+                c.execute(f'ALTER TABLE sessions ADD COLUMN {col_name} {col_type}')
         # ── Heatmap points per session ───────────────────────────────
         c.execute('''CREATE TABLE IF NOT EXISTS heatmap_points (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -816,19 +745,21 @@ def _db_update_daily(rec):
              rec['screenshots'], rec['drowsy_events']))
 
 def _session_to_dict(row):
+    data = dict(row)
+    duration_sec = data.get('duration_sec', 0)
     return {
-        'id':           row['id'],
-        'date':         row['date'],
-        'start_time':   row['start_time'],
-        'end_time':     row['end_time'],
-        'duration_sec': row['duration_sec'],
-        'duration_str': row['duration_str'],
-        'blinks':       row['blinks'],
-        'screenshots':  row['screenshots'],
-        'drowsy_events':row['drowsy_events'],
-        'avg_fatigue':  row['avg_fatigue'],
-        'top_area':     row['top_area'],
-        'productivity': row['productivity'],
+        'id':           data.get('id'),
+        'date':         data.get('date'),
+        'start_time':   data.get('start_time'),
+        'end_time':     data.get('end_time'),
+        'duration_sec': duration_sec,
+        'duration_str': data.get('duration_str', _fmt_time(duration_sec)),
+        'blinks':       data.get('blinks', 0),
+        'screenshots':  data.get('screenshots', 0),
+        'drowsy_events':data.get('drowsy_events', 0),
+        'avg_fatigue':  data.get('avg_fatigue', 0),
+        'top_area':     data.get('top_area', '—'),
+        'productivity': data.get('productivity', 0),
     }
 
 def _db_save_session(rec):
@@ -1092,7 +1023,7 @@ def tracking_loop():
                 state["focus_duration"] = round(center_time, 1)
 
 
-            # ── Both eyes 1s hold → SNAP (Screenshot) ─────
+            # ── 1s hold → SNAP (Screenshot) ──────────────
             if result["screenshot"]:
                 fn, fp = take_screenshot(None)
                 if fn:
@@ -1101,28 +1032,28 @@ def tracking_loop():
                     _db_save_screenshot(fn, fp)
                     beep(1200, 150)          # short camera-shutter beep
                     voice.speak("Screenshot taken")
-                    print("📸 SNAP — both eyes 1s hold screenshot")
+                    print("📸 SNAP — 1s hold screenshot")
                 else:
                     voice.speak("Screenshot failed")
                     print("📸 SNAP — screenshot FAILED")
 
-            # ── Both eyes 2s hold → ZOOM IN ────────────────
+            # ── 2s hold → ZOOM IN ─────────────────────────
             if result["zoom_in"]:
                 cursor.zoom_in()
                 state["zoom_level"]  = 2
                 state["last_action"] = "zoom_in"
                 beep(900, 200)           # rising tone = zoom in
                 voice.speak("Zoom in")
-                print("🔍 ZOOM IN — both eyes 2s hold")
+                print("🔍 ZOOM IN — 2s hold")
 
-            # ── Both eyes 3s hold → ZOOM OUT ───────────────
+            # ── 3s hold → ZOOM OUT ────────────────────────
             if result["zoom_out"]:
                 cursor.zoom_out()
                 state["zoom_level"]  = 1
                 state["last_action"] = "zoom_out"
                 beep(600, 200)           # falling tone = zoom out
                 voice.speak("Zoom out")
-                print("🔍 ZOOM OUT — both eyes 3s hold")
+                print("🔍 ZOOM OUT — 3s hold")
 
             # ── Overlay on frame ──────────────────────────
             h, w = frame.shape[:2]
@@ -1602,9 +1533,9 @@ def home():
 if __name__ == '__main__':
     print("=" * 60)
     print("  👁️  GAZEFLOW PROJECT — All-in-One Server (Port 5000)")
-    print("  📸  Both Eyes 1s    = Screenshot  + beep + voice")
-    print("  🔍  Both Eyes 2s    = Zoom IN     + beep + voice")
-    print("  🔍  Both Eyes 3s    = Zoom OUT    + beep + voice")
+    print("  📸  Eye Close 1s    = Screenshot  + beep + voice")
+    print("  🔍  Eye Close 2s    = Zoom IN     + beep + voice")
+    print("  🔍  Eye Close 3s    = Zoom OUT    + beep + voice")
     print("  ⚠️   Eye Close 7s    = WARNING alarm + voice rest guide")
     print("  🚨  Eye Close 10s   = CRITICAL alarm + urgent wake-up voice")
     print("  🌡️  Gaze Heatmap: /heatmap/live  /heatmap/session")

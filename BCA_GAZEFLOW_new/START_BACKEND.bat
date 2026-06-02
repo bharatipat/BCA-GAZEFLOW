@@ -11,5 +11,6 @@ echo  Starting Flask server on port 5000...
 echo  Port 5000 = All features
 echo.
 cd backend
+set PYTHONIOENCODING=utf-8
 python app.py
 pause
